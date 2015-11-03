@@ -1,44 +1,10 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package org.apache.flink.graph;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.List;
-import java.util.Arrays;
-
-import org.apache.flink.api.common.functions.CoGroupFunction;
-import org.apache.flink.api.common.functions.FilterFunction;
-import org.apache.flink.api.common.functions.FlatJoinFunction;
-import org.apache.flink.api.common.functions.JoinFunction;
-import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.GroupReduceFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
+import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFields;
-import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFieldsFirst;
-import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFieldsSecond;
+import org.apache.flink.api.java.functions.FunctionAnnotation;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -46,11 +12,7 @@ import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
-import org.apache.flink.graph.gsa.ApplyFunction;
-import org.apache.flink.graph.gsa.GSAConfiguration;
-import org.apache.flink.graph.gsa.GatherFunction;
-import org.apache.flink.graph.gsa.GatherSumApplyIteration;
-import org.apache.flink.graph.gsa.SumFunction;
+import org.apache.flink.graph.gsa.*;
 import org.apache.flink.graph.spargel.MessagingFunction;
 import org.apache.flink.graph.spargel.VertexCentricConfiguration;
 import org.apache.flink.graph.spargel.VertexCentricIteration;
@@ -60,173 +22,64 @@ import org.apache.flink.graph.utils.Tuple2ToVertexMap;
 import org.apache.flink.graph.utils.Tuple3ToEdgeMap;
 import org.apache.flink.graph.utils.VertexToTuple2Map;
 import org.apache.flink.graph.validation.GraphValidator;
-import org.apache.flink.util.Collector;
 import org.apache.flink.types.NullValue;
+import org.apache.flink.util.Collector;
 
-/**
- * Represents a Graph consisting of {@link Edge edges} and {@link Vertex
- * vertices}.
- * 
- * 
- * @see org.apache.flink.graph.Edge
- * @see org.apache.flink.graph.Vertex
- * 
- * @param <K> the key type for edge and vertex identifiers
- * @param <VV> the value type for vertices
- * @param <EV> the value type for edges
- */
-@SuppressWarnings("serial")
-public class Graph<K, VV, EV> {
+import java.util.*;
 
-	private final ExecutionEnvironment context;
-	private final DataSet<Vertex<K, VV>> vertices;
+public class BipartiteGraph<K, VV, EV> extends Graph<K, VV, EV> {
+
+	private final DataSet<Vertex<K, VV>> topVertices, bottomVertices;
 	private final DataSet<Edge<K, EV>> edges;
 
 	/**
-	 * Creates a graph from two DataSets: vertices and edges
-	 * 
-	 * @param vertices a DataSet of vertices.
-	 * @param edges a DataSet of edges.
-	 * @param context the flink execution environment.
+	 * Creates BipartiteGraph from two sets of vertices and edges
+	 * @param topVertices Dataset of first partition
+	 * @param bottomVertices Dataset of second partition
+	 * @param edges Dataset of edges of the graph
+	 * @param context flink execution environment
 	 */
-	protected Graph(DataSet<Vertex<K, VV>> vertices, DataSet<Edge<K, EV>> edges, ExecutionEnvironment context) {
-		this.vertices = vertices;
+	protected BipartiteGraph(DataSet<Vertex<K, VV>> topVertices, DataSet<Vertex<K, VV>> bottomVertices,
+						   DataSet<Edge<K, EV>> edges, ExecutionEnvironment context) {
+		super(null, edges, context);
+		this.topVertices = topVertices;
+		this.bottomVertices = bottomVertices;
 		this.edges = edges;
-		this.context = context;
 	}
 
 	/**
-	 * Creates a graph from a Collection of vertices and a Collection of edges.
+	 * Creates a BipartiteGraph from a Collection of vertices and a Collection of edges.
 	 *
-	 * @param vertices a Collection of vertices.
+	 * @param topVertices a Collection of first partition
+	 * @param bottomVertices a Collection of second partition
 	 * @param edges a Collection of edges.
 	 * @param context the flink execution environment.
 	 * @return the newly created graph.
 	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromCollection(Collection<Vertex<K, VV>> vertices,
-			Collection<Edge<K, EV>> edges, ExecutionEnvironment context) {
+	public static <K, VV, EV> BipartiteGraph<K, VV, EV> fromCollection(Collection<Vertex<K, VV>> topVertices,
+			   Collection<Vertex<K, VV>> bottomVertices, Collection<Edge<K, EV>> edges, ExecutionEnvironment context) {
 
-		return fromDataSet(context.fromCollection(vertices),
+		return fromDataSet(context.fromCollection(topVertices), context.fromCollection(bottomVertices),
 				context.fromCollection(edges), context);
 	}
 
 	/**
-	 * Creates a graph from a Collection of edges.
-	 * Vertices are created automatically and their values are set to
-	 * NullValue.
+	 * Creates a BipartiteGraph from a DataSet of vertices and a DataSet of edges.
 	 *
-	 * @param edges a Collection of edges.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, EV> Graph<K, NullValue, EV> fromCollection(Collection<Edge<K, EV>> edges,
-			ExecutionEnvironment context) {
-
-		return fromDataSet(context.fromCollection(edges), context);
-	}
-
-	/**
-	 * Creates a graph from a Collection of edges.
-	 * Vertices are created automatically and their values are set 
-	 * by applying the provided map function to the vertex IDs.
-	 * 
-	 * @param edges a Collection of edges.
-	 * @param vertexValueInitializer a map function that initializes the vertex values.
-	 * It allows to apply a map transformation on the vertex ID to produce an initial vertex value. 
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromCollection(Collection<Edge<K, EV>> edges,
-			final MapFunction<K, VV> vertexValueInitializer, ExecutionEnvironment context) {
-
-		return fromDataSet(context.fromCollection(edges), vertexValueInitializer, context);
-	}
-
-	/**
-	 * Creates a graph from a DataSet of vertices and a DataSet of edges.
-	 * 
-	 * @param vertices a DataSet of vertices.
+	 * @param topVertices a DataSet of first partition.
+	 * @param bottomVertices a DataSet of second partition.
 	 * @param edges a DataSet of edges.
 	 * @param context the flink execution environment.
 	 * @return the newly created graph.
 	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromDataSet(DataSet<Vertex<K, VV>> vertices,
-			DataSet<Edge<K, EV>> edges, ExecutionEnvironment context) {
+	public static <K, VV, EV> BipartiteGraph<K, VV, EV> fromDataSet(DataSet<Vertex<K, VV>> topVertices,
+				DataSet<Vertex<K, VV>> bottomVertices, DataSet<Edge<K, EV>> edges, ExecutionEnvironment context) {
 
-		return new Graph<K, VV, EV>(vertices, edges, context);
+		return new BipartiteGraph<K, VV, EV>(topVertices, bottomVertices, edges, context);
 	}
 
 	/**
-	 * Creates a graph from a DataSet of edges.
-	 * Vertices are created automatically and their values are set to
-	 * NullValue.
-	 * 
-	 * @param edges a DataSet of edges.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, EV> Graph<K, NullValue, EV> fromDataSet(
-			DataSet<Edge<K, EV>> edges, ExecutionEnvironment context) {
-
-		DataSet<Vertex<K, NullValue>> vertices = edges.flatMap(new EmitSrcAndTarget<K, EV>()).distinct();
-
-		return new Graph<K, NullValue, EV>(vertices, edges, context);
-	}
-
-	private static final class EmitSrcAndTarget<K, EV> implements FlatMapFunction<
-		Edge<K, EV>, Vertex<K, NullValue>> {
-
-		public void flatMap(Edge<K, EV> edge, Collector<Vertex<K, NullValue>> out) {
-			out.collect(new Vertex<K, NullValue>(edge.f0, NullValue.getInstance()));
-			out.collect(new Vertex<K, NullValue>(edge.f1, NullValue.getInstance()));
-		}
-	}
-
-	/**
-	 * Creates a graph from a DataSet of edges.
-	 * Vertices are created automatically and their values are set
-	 * by applying the provided map function to the vertex IDs.
-	 * 
-	 * @param edges a DataSet of edges.
-	 * @param vertexValueInitializer the mapper function that initializes the vertex values.
-	 * It allows to apply a map transformation on the vertex ID to produce an initial vertex value.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromDataSet(DataSet<Edge<K, EV>> edges,
-			final MapFunction<K, VV> vertexValueInitializer, ExecutionEnvironment context) {
-
-		TypeInformation<K> keyType = ((TupleTypeInfo<?>) edges.getType()).getTypeAt(0);
-
-		TypeInformation<VV> valueType = TypeExtractor.createTypeInfo(
-				MapFunction.class, vertexValueInitializer.getClass(), 1, null, null);
-
-		@SuppressWarnings({ "unchecked", "rawtypes" })
-		TypeInformation<Vertex<K, VV>> returnType = (TypeInformation<Vertex<K, VV>>) new TupleTypeInfo(
-				Vertex.class, keyType, valueType);
-
-		DataSet<Vertex<K, VV>> vertices = edges
-				.flatMap(new EmitSrcAndTargetAsTuple1<K, EV>()).distinct()
-				.map(new MapFunction<Tuple1<K>, Vertex<K, VV>>() {
-					public Vertex<K, VV> map(Tuple1<K> value) throws Exception {
-						return new Vertex<K, VV>(value.f0, vertexValueInitializer.map(value.f0));
-					}
-				}).returns(returnType).withForwardedFields("f0");
-
-		return new Graph<K, VV, EV>(vertices, edges, context);
-	}
-
-	private static final class EmitSrcAndTargetAsTuple1<K, EV> implements FlatMapFunction<
-		Edge<K, EV>, Tuple1<K>> {
-
-		public void flatMap(Edge<K, EV> edge, Collector<Tuple1<K>> out) {
-			out.collect(new Tuple1<K>(edge.f0));
-			out.collect(new Tuple1<K>(edge.f1));
-		}
-	}
-
-	/**
-	 * Creates a graph from a DataSet of Tuple2 objects for vertices and 
+	 * Creates a BipartiteGraph from a DataSet of Tuple2 objects for vertices and
 	 * Tuple3 objects for edges.
 	 * <p>
 	 * The first field of the Tuple2 vertex object will become the vertex ID
@@ -234,266 +87,49 @@ public class Graph<K, VV, EV> {
 	 * The first field of the Tuple3 object for edges will become the source ID,
 	 * the second field will become the target ID, and the third field will become
 	 * the edge value.
-	 * 
-	 * @param vertices a DataSet of Tuple2 representing the vertices.
-	 * @param edges a DataSet of Tuple3 representing the edges.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromTupleDataSet(DataSet<Tuple2<K, VV>> vertices,
-			DataSet<Tuple3<K, K, EV>> edges, ExecutionEnvironment context) {
-
-		DataSet<Vertex<K, VV>> vertexDataSet = vertices.map(new Tuple2ToVertexMap<K, VV>());
-		DataSet<Edge<K, EV>> edgeDataSet = edges.map(new Tuple3ToEdgeMap<K, EV>());
-		return fromDataSet(vertexDataSet, edgeDataSet, context);
-	}
-
-	/**
-	 * Creates a graph from a DataSet of Tuple3 objects for edges.
-	 * <p>
-	 * The first field of the Tuple3 object will become the source ID,
-	 * the second field will become the target ID, and the third field will become
-	 * the edge value.
-	 * <p>
-	 * Vertices are created automatically and their values are set to NullValue.
-	 * 
-	 * @param edges a DataSet of Tuple3 representing the edges.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, EV> Graph<K, NullValue, EV> fromTupleDataSet(DataSet<Tuple3<K, K, EV>> edges,
-			ExecutionEnvironment context) {
-
-		DataSet<Edge<K, EV>> edgeDataSet = edges.map(new Tuple3ToEdgeMap<K, EV>());
-		return fromDataSet(edgeDataSet, context);
-	}
-
-	/**
-	 * Creates a graph from a DataSet of Tuple3 objects for edges.
-	 * <p>
-	 * Each Tuple3 will become one Edge, where the source ID will be the first field of the Tuple2,
-	 * the target ID will be the second field of the Tuple2
-	 * and the Edge value will be the third field of the Tuple3.
-	 * <p>
-	 * Vertices are created automatically and their values are initialized
-	 * by applying the provided vertexValueInitializer map function to the vertex IDs.
-	 * 
-	 * @param edges a DataSet of Tuple3.
-	 * @param vertexValueInitializer the mapper function that initializes the vertex values.
-	 * It allows to apply a map transformation on the vertex ID to produce an initial vertex value.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, VV, EV> Graph<K, VV, EV> fromTupleDataSet(DataSet<Tuple3<K, K, EV>> edges,
-			final MapFunction<K, VV> vertexValueInitializer, ExecutionEnvironment context) {
-
-		DataSet<Edge<K, EV>> edgeDataSet = edges.map(new Tuple3ToEdgeMap<K, EV>());
-		return fromDataSet(edgeDataSet, vertexValueInitializer, context);
-	}
-
-	/**
-	 * Creates a graph from a DataSet of Tuple2 objects for edges.
-	 * Each Tuple2 will become one Edge, where the source ID will be the first field of the Tuple2
-	 * and the target ID will be the second field of the Tuple2.
-	 * <p>
-	 * Edge value types and Vertex values types will be set to NullValue.
-	 * 
-	 * @param edges a DataSet of Tuple2.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K> Graph<K, NullValue, NullValue> fromTuple2DataSet(DataSet<Tuple2<K, K>> edges,
-			ExecutionEnvironment context) {
-
-		DataSet<Edge<K, NullValue>> edgeDataSet = edges.map(
-				new MapFunction<Tuple2<K, K>, Edge<K, NullValue>>() {
-
-					public Edge<K, NullValue> map(Tuple2<K, K> input) {
-						return new Edge<K, NullValue>(input.f0, input.f1, NullValue.getInstance());
-					}
-		}).withForwardedFields("f0; f1");
-		return fromDataSet(edgeDataSet, context);
-	}
-
-	/**
-	 * Creates a graph from a DataSet of Tuple2 objects for edges.
-	 * Each Tuple2 will become one Edge, where the source ID will be the first field of the Tuple2
-	 * and the target ID will be the second field of the Tuple2.
-	 * <p>
-	 * Edge value types will be set to NullValue.
-	 * Vertex values can be initialized by applying a user-defined map function on the vertex IDs.
-	 * 
-	 * @param edges a DataSet of Tuple2, where the first field corresponds to the source ID
-	 * and the second field corresponds to the target ID.
-	 * @param vertexValueInitializer the mapper function that initializes the vertex values.
-	 * It allows to apply a map transformation on the vertex ID to produce an initial vertex value.
-	 * @param context the flink execution environment.
-	 * @return the newly created graph.
-	 */
-	public static <K, VV> Graph<K, VV, NullValue> fromTuple2DataSet(DataSet<Tuple2<K, K>> edges,
-			final MapFunction<K, VV> vertexValueInitializer, ExecutionEnvironment context) {
-
-		DataSet<Edge<K, NullValue>> edgeDataSet = edges.map(
-				new MapFunction<Tuple2<K, K>, Edge<K, NullValue>>() {
-
-					public Edge<K, NullValue> map(Tuple2<K, K> input) {
-						return new Edge<K, NullValue>(input.f0, input.f1, NullValue.getInstance());
-					}
-				}).withForwardedFields("f0; f1");
-		return fromDataSet(edgeDataSet, vertexValueInitializer, context);
-	}
-
-	/**
-	* Creates a Graph from a CSV file of vertices and a CSV file of edges.
-	* 
-	* @param verticesPath path to a CSV file with the Vertex data.
-	* @param edgesPath path to a CSV file with the Edge data
-	* @param context the Flink execution environment.
-	* @return An instance of {@link org.apache.flink.graph.GraphCsvReader}, 
-	* on which calling methods to specify types of the Vertex ID, Vertex value and Edge value returns a Graph.
-	* 
-	* @see {@link org.apache.flink.graph.GraphCsvReader#types(Class, Class, Class)},
-	* {@link org.apache.flink.graph.GraphCsvReader#vertexTypes(Class, Class)},
-	* {@link org.apache.flink.graph.GraphCsvReader#edgeTypes(Class, Class)} and
-	* {@link org.apache.flink.graph.GraphCsvReader#keyType(Class)}.
-	*/
-	public static GraphCsvReader fromCsvReader(String verticesPath, String edgesPath, ExecutionEnvironment context) {
-		return new GraphCsvReader(verticesPath, edgesPath, context);
-	}
-
-	/** 
-	* Creates a graph from a CSV file of edges. Vertices will be created automatically.
-	*
-	* @param edgesPath a path to a CSV file with the Edges data
-	* @param context the execution environment.
-	* @return An instance of {@link org.apache.flink.graph.GraphCsvReader},
-	* on which calling methods to specify types of the Vertex ID, Vertex value and Edge value returns a Graph.
-	* 
-	* @see {@link org.apache.flink.graph.GraphCsvReader#types(Class, Class, Class)},
-	* {@link org.apache.flink.graph.GraphCsvReader#vertexTypes(Class, Class)},
-	* {@link org.apache.flink.graph.GraphCsvReader#edgeTypes(Class, Class)} and
-	* {@link org.apache.flink.graph.GraphCsvReader#keyType(Class)}.
-	*/
-	public static GraphCsvReader fromCsvReader(String edgesPath, ExecutionEnvironment context) {
-		return new GraphCsvReader(edgesPath, context);
-	}
-
-	/** 
-	 * Creates a graph from a CSV file of edges. Vertices will be created automatically and
-	 * Vertex values can be initialized using a user-defined mapper.
 	 *
-	 * @param edgesPath a path to a CSV file with the Edge data
-	 * @param vertexValueInitializer the mapper function that initializes the vertex values.
-	 * It allows to apply a map transformation on the vertex ID to produce an initial vertex value.
-	 * @param context the execution environment.
-	 * @return An instance of {@link org.apache.flink.graph.GraphCsvReader},
-	 * on which calling methods to specify types of the Vertex ID, Vertex Value and Edge value returns a Graph.
-	 * 
-	 * @see {@link org.apache.flink.graph.GraphCsvReader#types(Class, Class, Class)},
-	 * {@link org.apache.flink.graph.GraphCsvReader#vertexTypes(Class, Class)},
-	 * {@link org.apache.flink.graph.GraphCsvReader#edgeTypes(Class, Class)} and
-	 * {@link org.apache.flink.graph.GraphCsvReader#keyType(Class)}.
+	 * @param topVertices a DataSet of Tuple2 representing the first partition of vertices.
+	 * @param bottomVertices a DataSet of Tuple2 representing the second partition of vertices.
+	 * @param edges a DataSet of Tuple3 representing the edges.
+	 * @param context the flink execution environment.
+	 * @return the newly created graph.
 	 */
-	public static <K, VV> GraphCsvReader fromCsvReader(String edgesPath,
-			final MapFunction<K, VV> vertexValueInitializer, ExecutionEnvironment context) {
-		return new GraphCsvReader(edgesPath, vertexValueInitializer, context);
+	public static <K, VV, EV> Graph<K, VV, EV> fromTupleDataSet(DataSet<Tuple2<K, VV>> topVertices,
+				DataSet<Tuple2<K, VV>> bottomVertices, DataSet<Tuple3<K, K, EV>> edges, ExecutionEnvironment context) {
+
+		DataSet<Vertex<K, VV>> topVertexDataSet = topVertices.map(new Tuple2ToVertexMap<K, VV>());
+		DataSet<Vertex<K, VV>> bottomVertexDataSet = bottomVertices.map(new Tuple2ToVertexMap<K, VV>());
+		DataSet<Edge<K, EV>> edgeDataSet = edges.map(new Tuple3ToEdgeMap<K, EV>());
+		return fromDataSet(topVertexDataSet, bottomVertexDataSet, edgeDataSet, context);
 	}
 
 	/**
-	 * @return the flink execution environment.
+	 * Function to check if the graph is indeed a BipartiteGraph
+	 * @return true if Graph is Bipartite. False otherwise.
+	 * @throws Exception
 	 */
-	public ExecutionEnvironment getContext() {
-		return this.context;
-	}
-
-	/**
-	 * Function that checks whether a Graph is a valid Graph,
-	 * as defined by the given {@link GraphValidator}.
-	 * 
-	 * @return true if the Graph is valid.
-	 */
-	public Boolean validate(GraphValidator<K, VV, EV> validator) throws Exception {
-		return validator.validate(this);
+	public Boolean validate() throws Exception	{
+		//TODO: Rewrite.
+		return true;
 	}
 
 	/**
 	 * @return the vertex DataSet.
 	 */
 	public DataSet<Vertex<K, VV>> getVertices() {
-		return vertices;
-	}
-
-	/**
-	 * @return the edge DataSet.
-	 */
-	public DataSet<Edge<K, EV>> getEdges() {
-		return edges;
-	}
-
-	/**
-	 * @return the vertex DataSet as Tuple2.
-	 */
-	public DataSet<Tuple2<K, VV>> getVerticesAsTuple2() {
-		return getVertices().map(new VertexToTuple2Map<K, VV>());
-	}
-
-	/**
-	 * @return the edge DataSet as Tuple3.
-	 */
-	public DataSet<Tuple3<K, K, EV>> getEdgesAsTuple3() {
-		return edges.map(new EdgeToTuple3Map<K, EV>());
-	}
-
-	/**
-	 * This method allows access to the graph's edge values along with its source and target vertex values.
-	 *
-	 * @return a triplet DataSet consisting of (srcVertexId, trgVertexId, srcVertexValue, trgVertexValue, edgeValue)
-	 */
-	public DataSet<Triplet<K, VV, EV>> getTriplets() {
-		return this.getVertices().join(this.getEdges()).where(0).equalTo(0)
-				.with(new ProjectEdgeWithSrcValue<K, VV, EV>())
-				.join(this.getVertices()).where(1).equalTo(0)
-				.with(new ProjectEdgeWithVertexValues<K, VV, EV>());
-	}
-
-	@ForwardedFieldsFirst("f1->f2")
-	@ForwardedFieldsSecond("f0; f1; f2->f3")
-	private static final class ProjectEdgeWithSrcValue<K, VV, EV> implements
-			FlatJoinFunction<Vertex<K, VV>, Edge<K, EV>, Tuple4<K, K, VV, EV>> {
-
-		@Override
-		public void join(Vertex<K, VV> vertex, Edge<K, EV> edge, Collector<Tuple4<K, K, VV, EV>> collector)
-				throws Exception {
-
-			collector.collect(new Tuple4<K, K, VV, EV>(edge.getSource(), edge.getTarget(), vertex.getValue(),
-					edge.getValue()));
-		}
-	}
-
-	@ForwardedFieldsFirst("f0; f1; f2; f3->f4")
-	@ForwardedFieldsSecond("f1->f3")
-	private static final class ProjectEdgeWithVertexValues<K, VV, EV> implements
-			FlatJoinFunction<Tuple4<K, K, VV, EV>, Vertex<K, VV>, Triplet<K, VV, EV>> {
-
-		@Override
-		public void join(Tuple4<K, K, VV, EV> tripletWithSrcValSet,
-						Vertex<K, VV> vertex, Collector<Triplet<K, VV, EV>> collector) throws Exception {
-
-			collector.collect(new Triplet<K, VV, EV>(tripletWithSrcValSet.f0, tripletWithSrcValSet.f1,
-					tripletWithSrcValSet.f2, vertex.getValue(), tripletWithSrcValSet.f3));
-		}
+		return topVertices.union(bottomVertices);
 	}
 
 	/**
 	 * Apply a function to the attribute of each vertex in the graph.
-	 * 
+	 *
 	 * @param mapper the map function to apply.
 	 * @return a new graph
 	 */
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public <NV> Graph<K, NV, EV> mapVertices(final MapFunction<Vertex<K, VV>, NV> mapper) {
 
-		TypeInformation<K> keyType = ((TupleTypeInfo<?>) getVertices().getType()).getTypeAt(0);
+		TypeInformation<K> keyType = ((TupleTypeInfo<?>) vertices.getType()).getTypeAt(0);
 
 		TypeInformation<NV> valueType = TypeExtractor.createTypeInfo(MapFunction.class, mapper.getClass(), 1, null, null);
 
@@ -511,7 +147,7 @@ public class Graph<K, VV, EV> {
 	 * @return a new graph
 	 */
 	public <NV> Graph<K, NV, EV> mapVertices(final MapFunction<Vertex<K, VV>, NV> mapper, TypeInformation<Vertex<K,NV>> returnType) {
-		DataSet<Vertex<K, NV>> mappedVertices = getVertices().map(
+		DataSet<Vertex<K, NV>> mappedVertices = vertices.map(
 				new MapFunction<Vertex<K, VV>, Vertex<K, NV>>() {
 					public Vertex<K, NV> map(Vertex<K, VV> value) throws Exception {
 						return new Vertex<K, NV>(value.f0, mapper.map(value));
@@ -525,7 +161,7 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Apply a function to the attribute of each edge in the graph.
-	 * 
+	 *
 	 * @param mapper the map function to apply.
 	 * @return a new graph
 	 */
@@ -567,20 +203,20 @@ public class Graph<K, VV, EV> {
 	 * Joins the vertex DataSet of this graph with an input Tuple2 DataSet and applies
 	 * a user-defined transformation on the values of the matched records.
 	 * The vertex ID and the first field of the Tuple2 DataSet are used as the join keys.
-	 * 
+	 *
 	 * @param inputDataSet the Tuple2 DataSet to join with.
 	 * The first field of the Tuple2 is used as the join key and the second field is passed
-	 * as a parameter to the transformation function. 
+	 * as a parameter to the transformation function.
 	 * @param vertexJoinFunction the transformation function to apply.
 	 * The first parameter is the current vertex value and the second parameter is the value
 	 * of the matched Tuple2 from the input DataSet.
 	 * @return a new Graph, where the vertex values have been updated according to the
 	 * result of the vertexJoinFunction.
-	 * 
+	 *
 	 * @param <T> the type of the second field of the input Tuple2 DataSet.
-	*/
-	public <T> Graph<K, VV, EV> joinWithVertices(DataSet<Tuple2<K, T>> inputDataSet, 
-			final VertexJoinFunction<VV, T> vertexJoinFunction) {
+	 */
+	public <T> Graph<K, VV, EV> joinWithVertices(DataSet<Tuple2<K, T>> inputDataSet,
+												 final VertexJoinFunction<VV, T> vertexJoinFunction) {
 
 		DataSet<Vertex<K, VV>> resultedVertices = this.getVertices()
 				.coGroup(inputDataSet).where(0).equalTo(0)
@@ -599,7 +235,7 @@ public class Graph<K, VV, EV> {
 
 		@Override
 		public void coGroup(Iterable<Vertex<K, VV>> vertices,
-				Iterable<Tuple2<K, T>> input, Collector<Vertex<K, VV>> collector) throws Exception {
+							Iterable<Tuple2<K, T>> input, Collector<Vertex<K, VV>> collector) throws Exception {
 
 			final Iterator<Vertex<K, VV>> vertexIterator = vertices.iterator();
 			final Iterator<Tuple2<K, T>> inputIterator = input.iterator();
@@ -621,24 +257,24 @@ public class Graph<K, VV, EV> {
 	 * Joins the edge DataSet with an input DataSet on the composite key of both
 	 * source and target IDs and applies a user-defined transformation on the values
 	 * of the matched records. The first two fields of the input DataSet are used as join keys.
-	 * 
+	 *
 	 * @param inputDataSet the DataSet to join with.
 	 * The first two fields of the Tuple3 are used as the composite join key
-	 * and the third field is passed as a parameter to the transformation function. 
+	 * and the third field is passed as a parameter to the transformation function.
 	 * @param edgeJoinFunction the transformation function to apply.
 	 * The first parameter is the current edge value and the second parameter is the value
 	 * of the matched Tuple3 from the input DataSet.
 	 * @param <T> the type of the third field of the input Tuple3 DataSet.
 	 * @return a new Graph, where the edge values have been updated according to the
 	 * result of the edgeJoinFunction.
-	*/
+	 */
 	public <T> Graph<K, VV, EV> joinWithEdges(DataSet<Tuple3<K, K, T>> inputDataSet,
-			final EdgeJoinFunction<EV, T> edgeJoinFunction) {
+											  final EdgeJoinFunction<EV, T> edgeJoinFunction) {
 
 		DataSet<Edge<K, EV>> resultedEdges = this.getEdges()
 				.coGroup(inputDataSet).where(0, 1).equalTo(0, 1)
 				.with(new ApplyCoGroupToEdgeValues<K, EV, T>(edgeJoinFunction));
-		return new Graph<K, VV, EV>(this.getVertices(), resultedEdges, this.context);
+		return new Graph<K, VV, EV>(this.vertices, resultedEdges, this.context);
 	}
 
 	private static final class ApplyCoGroupToEdgeValues<K, EV, T>
@@ -652,7 +288,7 @@ public class Graph<K, VV, EV> {
 
 		@Override
 		public void coGroup(Iterable<Edge<K, EV>> edges, Iterable<Tuple3<K, K, T>> input,
-				Collector<Edge<K, EV>> collector) throws Exception {
+							Collector<Edge<K, EV>> collector) throws Exception {
 
 			final Iterator<Edge<K, EV>> edgesIterator = edges.iterator();
 			final Iterator<Tuple3<K, K, T>> inputIterator = input.iterator();
@@ -663,7 +299,7 @@ public class Graph<K, VV, EV> {
 
 					collector.collect(new Edge<K, EV>(inputNext.f0,
 							inputNext.f1, edgeJoinFunction.edgeJoin(
-									edgesIterator.next().f2, inputNext.f2)));
+							edgesIterator.next().f2, inputNext.f2)));
 				} else {
 					collector.collect(edgesIterator.next());
 				}
@@ -675,25 +311,25 @@ public class Graph<K, VV, EV> {
 	 * Joins the edge DataSet with an input Tuple2 DataSet and applies a user-defined transformation
 	 * on the values of the matched records.
 	 * The source ID of the edges input and the first field of the input DataSet are used as join keys.
-	 * 
+	 *
 	 * @param inputDataSet the DataSet to join with.
 	 * The first field of the Tuple2 is used as the join key
-	 * and the second field is passed as a parameter to the transformation function. 
+	 * and the second field is passed as a parameter to the transformation function.
 	 * @param edgeJoinFunction the transformation function to apply.
 	 * The first parameter is the current edge value and the second parameter is the value
 	 * of the matched Tuple2 from the input DataSet.
 	 * @param <T> the type of the second field of the input Tuple2 DataSet.
 	 * @return a new Graph, where the edge values have been updated according to the
 	 * result of the edgeJoinFunction.
-	*/
+	 */
 	public <T> Graph<K, VV, EV> joinWithEdgesOnSource(DataSet<Tuple2<K, T>> inputDataSet,
-			final EdgeJoinFunction<EV, T> edgeJoinFunction) {
+													  final EdgeJoinFunction<EV, T> edgeJoinFunction) {
 
 		DataSet<Edge<K, EV>> resultedEdges = this.getEdges()
 				.coGroup(inputDataSet).where(0).equalTo(0)
 				.with(new ApplyCoGroupToEdgeValuesOnEitherSourceOrTarget<K, EV, T>(edgeJoinFunction));
 
-		return new Graph<K, VV, EV>(this.getVertices(), resultedEdges, this.context);
+		return new Graph<K, VV, EV>(this.vertices, resultedEdges, this.context);
 	}
 
 	private static final class ApplyCoGroupToEdgeValuesOnEitherSourceOrTarget<K, EV, T>
@@ -707,7 +343,7 @@ public class Graph<K, VV, EV> {
 
 		@Override
 		public void coGroup(Iterable<Edge<K, EV>> edges,
-				Iterable<Tuple2<K, T>> input, Collector<Edge<K, EV>> collector) throws Exception {
+							Iterable<Tuple2<K, T>> input, Collector<Edge<K, EV>> collector) throws Exception {
 
 			final Iterator<Edge<K, EV>> edgesIterator = edges.iterator();
 			final Iterator<Tuple2<K, T>> inputIterator = input.iterator();
@@ -734,38 +370,38 @@ public class Graph<K, VV, EV> {
 	 * Joins the edge DataSet with an input Tuple2 DataSet and applies a user-defined transformation
 	 * on the values of the matched records.
 	 * The target ID of the edges input and the first field of the input DataSet are used as join keys.
-	 * 
+	 *
 	 * @param inputDataSet the DataSet to join with.
 	 * The first field of the Tuple2 is used as the join key
-	 * and the second field is passed as a parameter to the transformation function. 
+	 * and the second field is passed as a parameter to the transformation function.
 	 * @param edgeJoinFunction the transformation function to apply.
 	 * The first parameter is the current edge value and the second parameter is the value
 	 * of the matched Tuple2 from the input DataSet.
 	 * @param <T> the type of the second field of the input Tuple2 DataSet.
 	 * @return a new Graph, where the edge values have been updated according to the
 	 * result of the edgeJoinFunction.
-	*/
+	 */
 	public <T> Graph<K, VV, EV> joinWithEdgesOnTarget(DataSet<Tuple2<K, T>> inputDataSet,
-			final EdgeJoinFunction<EV, T> edgeJoinFunction) {
+													  final EdgeJoinFunction<EV, T> edgeJoinFunction) {
 
 		DataSet<Edge<K, EV>> resultedEdges = this.getEdges()
 				.coGroup(inputDataSet).where(1).equalTo(0)
 				.with(new ApplyCoGroupToEdgeValuesOnEitherSourceOrTarget<K, EV, T>(edgeJoinFunction));
 
-		return new Graph<K, VV, EV>(this.getVertices(), resultedEdges, this.context);
+		return new Graph<K, VV, EV>(this.vertices, resultedEdges, this.context);
 	}
 
 	/**
 	 * Apply filtering functions to the graph and return a sub-graph that
 	 * satisfies the predicates for both vertices and edges.
-	 * 
+	 *
 	 * @param vertexFilter the filter function for vertices.
 	 * @param edgeFilter the filter function for edges.
 	 * @return the resulting sub-graph.
 	 */
 	public Graph<K, VV, EV> subgraph(FilterFunction<Vertex<K, VV>> vertexFilter, FilterFunction<Edge<K, EV>> edgeFilter) {
 
-		DataSet<Vertex<K, VV>> filteredVertices = this.getVertices().filter(vertexFilter);
+		DataSet<Vertex<K, VV>> filteredVertices = this.vertices.filter(vertexFilter);
 
 		DataSet<Edge<K, EV>> remainingEdges = this.edges.join(filteredVertices)
 				.where(0).equalTo(0).with(new ProjectEdge<K, VV, EV>())
@@ -781,13 +417,13 @@ public class Graph<K, VV, EV> {
 	/**
 	 * Apply a filtering function to the graph and return a sub-graph that
 	 * satisfies the predicates only for the vertices.
-	 * 
+	 *
 	 * @param vertexFilter the filter function for vertices.
 	 * @return the resulting sub-graph.
 	 */
 	public Graph<K, VV, EV> filterOnVertices(FilterFunction<Vertex<K, VV>> vertexFilter) {
 
-		DataSet<Vertex<K, VV>> filteredVertices = this.getVertices().filter(vertexFilter);
+		DataSet<Vertex<K, VV>> filteredVertices = this.vertices.filter(vertexFilter);
 
 		DataSet<Edge<K, EV>> remainingEdges = this.edges.join(filteredVertices)
 				.where(0).equalTo(0).with(new ProjectEdge<K, VV, EV>())
@@ -800,19 +436,19 @@ public class Graph<K, VV, EV> {
 	/**
 	 * Apply a filtering function to the graph and return a sub-graph that
 	 * satisfies the predicates only for the edges.
-	 * 
+	 *
 	 * @param edgeFilter the filter function for edges.
 	 * @return the resulting sub-graph.
 	 */
 	public Graph<K, VV, EV> filterOnEdges(FilterFunction<Edge<K, EV>> edgeFilter) {
 		DataSet<Edge<K, EV>> filteredEdges = this.edges.filter(edgeFilter);
 
-		return new Graph<K, VV, EV>(this.getVertices(), filteredEdges, this.context);
+		return new Graph<K, VV, EV>(this.vertices, filteredEdges, this.context);
 	}
 
-	@ForwardedFieldsFirst("f0; f1; f2")
+	@FunctionAnnotation.ForwardedFieldsFirst("f0; f1; f2")
 	private static final class ProjectEdge<K, VV, EV> implements FlatJoinFunction<
-		Edge<K, EV>, Vertex<K, VV>, Edge<K, EV>> {
+			Edge<K, EV>, Vertex<K, VV>, Edge<K, EV>> {
 		public void join(Edge<K, EV> first, Vertex<K, VV> second, Collector<Edge<K, EV>> out) {
 			out.collect(first);
 		}
@@ -820,19 +456,19 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Return the out-degree of all vertices in the graph
-	 * 
+	 *
 	 * @return A DataSet of Tuple2<vertexId, outDegree>
 	 */
 	public DataSet<Tuple2<K, Long>> outDegrees() {
 
-		return getVertices().coGroup(edges).where(0).equalTo(0).with(new CountNeighborsCoGroup<K, VV, EV>());
+		return vertices.coGroup(edges).where(0).equalTo(0).with(new CountNeighborsCoGroup<K, VV, EV>());
 	}
 
 	private static final class CountNeighborsCoGroup<K, VV, EV>
 			implements CoGroupFunction<Vertex<K, VV>, Edge<K, EV>, Tuple2<K, Long>> {
 		@SuppressWarnings("unused")
 		public void coGroup(Iterable<Vertex<K, VV>> vertex,	Iterable<Edge<K, EV>> outEdges,
-				Collector<Tuple2<K, Long>> out) {
+							Collector<Tuple2<K, Long>> out) {
 			long count = 0;
 			for (Edge<K, EV> edge : outEdges) {
 				count++;
@@ -850,17 +486,17 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Return the in-degree of all vertices in the graph
-	 * 
+	 *
 	 * @return A DataSet of Tuple2<vertexId, inDegree>
 	 */
 	public DataSet<Tuple2<K, Long>> inDegrees() {
 
-		return getVertices().coGroup(edges).where(0).equalTo(1).with(new CountNeighborsCoGroup<K, VV, EV>());
+		return vertices.coGroup(edges).where(0).equalTo(1).with(new CountNeighborsCoGroup<K, VV, EV>());
 	}
 
 	/**
 	 * Return the degree of all vertices in the graph
-	 * 
+	 *
 	 * @return A DataSet of Tuple2<vertexId, degree>
 	 */
 	public DataSet<Tuple2<K, Long>> getDegrees() {
@@ -869,44 +505,44 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * This operation adds all inverse-direction edges to the graph.
-	 * 
+	 *
 	 * @return the undirected graph.
 	 */
 	public Graph<K, VV, EV> getUndirected() {
 
 		DataSet<Edge<K, EV>> undirectedEdges = edges.flatMap(new RegularAndReversedEdgesMap<K, EV>());
-		return new Graph<K, VV, EV>(getVertices(), undirectedEdges, this.context);
+		return new Graph<K, VV, EV>(vertices, undirectedEdges, this.context);
 	}
 
 	/**
 	 * Groups by vertex and computes a GroupReduce transformation over the edge values of each vertex.
 	 * The edgesFunction applied on the edges has access to both the id and the value
 	 * of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the edgesFunction can iterate over all edges of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param edgesFunction the group reduce function to apply to the neighboring edges of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnEdges(EdgesFunctionWithVertexValue<K, VV, EV, T> edgesFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+											 EdgeDirection direction) throws IllegalArgumentException {
 
 		switch (direction) {
-		case IN:
-			return getVertices().coGroup(edges).where(0).equalTo(1)
-					.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction));
-		case OUT:
-			return getVertices().coGroup(edges).where(0).equalTo(0)
-					.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction));
-		case ALL:
-			return getVertices().coGroup(edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>()))
-					.where(0).equalTo(0).with(new ApplyCoGroupFunctionOnAllEdges<K, VV, EV, T>(edgesFunction));
-		default:
-			throw new IllegalArgumentException("Illegal edge direction");
+			case IN:
+				return vertices.coGroup(edges).where(0).equalTo(1)
+						.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction));
+			case OUT:
+				return vertices.coGroup(edges).where(0).equalTo(0)
+						.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction));
+			case ALL:
+				return vertices.coGroup(edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>()))
+						.where(0).equalTo(0).with(new ApplyCoGroupFunctionOnAllEdges<K, VV, EV, T>(edgesFunction));
+			default:
+				throw new IllegalArgumentException("Illegal edge direction");
 		}
 	}
 
@@ -914,29 +550,29 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the edge values of each vertex.
 	 * The edgesFunction applied on the edges has access to both the id and the value
 	 * of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the edgesFunction can iterate over all edges of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param edgesFunction the group reduce function to apply to the neighboring edges of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @param typeInfo the explicit return type.
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnEdges(EdgesFunctionWithVertexValue<K, VV, EV, T> edgesFunction,
-			EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
+											 EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
 
 		switch (direction) {
 			case IN:
-				return getVertices().coGroup(edges).where(0).equalTo(1)
+				return vertices.coGroup(edges).where(0).equalTo(1)
 						.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction)).returns(typeInfo);
 			case OUT:
-				return getVertices().coGroup(edges).where(0).equalTo(0)
+				return vertices.coGroup(edges).where(0).equalTo(0)
 						.with(new ApplyCoGroupFunction<K, VV, EV, T>(edgesFunction)).returns(typeInfo);
 			case ALL:
-				return getVertices().coGroup(edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>()))
+				return vertices.coGroup(edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>()))
 						.where(0).equalTo(0).with(new ApplyCoGroupFunctionOnAllEdges<K, VV, EV, T>(edgesFunction)).returns(typeInfo);
 			default:
 				throw new IllegalArgumentException("Illegal edge direction");
@@ -947,33 +583,33 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the edge values of each vertex.
 	 * The edgesFunction applied on the edges only has access to the vertex id (not the vertex value)
 	 * of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the edgesFunction can iterate over all edges of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param edgesFunction the group reduce function to apply to the neighboring edges of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnEdges(EdgesFunction<K, EV, T> edgesFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+											 EdgeDirection direction) throws IllegalArgumentException {
 
 		switch (direction) {
-		case IN:
-			return edges.map(new ProjectVertexIdMap<K, EV>(1))
-					.withForwardedFields("f1->f0")
-					.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
-		case OUT:
-			return edges.map(new ProjectVertexIdMap<K, EV>(0))
-					.withForwardedFields("f0")
-					.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
-		case ALL:
-			return edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>())
-					.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
-		default:
-			throw new IllegalArgumentException("Illegal edge direction");
+			case IN:
+				return edges.map(new ProjectVertexIdMap<K, EV>(1))
+						.withForwardedFields("f1->f0")
+						.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
+			case OUT:
+				return edges.map(new ProjectVertexIdMap<K, EV>(0))
+						.withForwardedFields("f0")
+						.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
+			case ALL:
+				return edges.flatMap(new EmitOneEdgePerNode<K, VV, EV>())
+						.groupBy(0).reduceGroup(new ApplyGroupReduceFunction<K, EV, T>(edgesFunction));
+			default:
+				throw new IllegalArgumentException("Illegal edge direction");
 		}
 	}
 
@@ -981,19 +617,19 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the edge values of each vertex.
 	 * The edgesFunction applied on the edges only has access to the vertex id (not the vertex value)
 	 * of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the edgesFunction can iterate over all edges of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param edgesFunction the group reduce function to apply to the neighboring edges of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @param typeInfo the explicit return type.
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnEdges(EdgesFunction<K, EV, T> edgesFunction,
-			EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
+											 EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
 
 		switch (direction) {
 			case IN:
@@ -1013,7 +649,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class ProjectVertexIdMap<K, EV> implements MapFunction<
-		Edge<K, EV>, Tuple2<K, Edge<K, EV>>> {
+			Edge<K, EV>, Tuple2<K, Edge<K, EV>>> {
 
 		private int fieldPosition;
 
@@ -1028,7 +664,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class ProjectVertexWithEdgeValueMap<K, EV>	implements MapFunction<
-		Edge<K, EV>, Tuple2<K, EV>> {
+			Edge<K, EV>, Tuple2<K, EV>> {
 
 		private int fieldPosition;
 
@@ -1043,7 +679,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class ApplyGroupReduceFunction<K, EV, T> implements GroupReduceFunction<
-		Tuple2<K, Edge<K, EV>>, T>,	ResultTypeQueryable<T> {
+			Tuple2<K, Edge<K, EV>>, T>, ResultTypeQueryable<T> {
 
 		private EdgesFunction<K, EV, T> function;
 
@@ -1062,7 +698,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class EmitOneEdgePerNode<K, VV, EV> implements FlatMapFunction<
-		Edge<K, EV>, Tuple2<K, Edge<K, EV>>> {
+			Edge<K, EV>, Tuple2<K, Edge<K, EV>>> {
 
 		public void flatMap(Edge<K, EV> edge, Collector<Tuple2<K, Edge<K, EV>>> out) {
 			out.collect(new Tuple2<K, Edge<K, EV>>(edge.getSource(), edge));
@@ -1071,7 +707,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class EmitOneVertexWithEdgeValuePerNode<K, EV>	implements FlatMapFunction<
-		Edge<K, EV>, Tuple2<K, EV>> {
+			Edge<K, EV>, Tuple2<K, EV>> {
 
 		public void flatMap(Edge<K, EV> edge, Collector<Tuple2<K, EV>> out) {
 			out.collect(new Tuple2<K, EV>(edge.getSource(), edge.getValue()));
@@ -1080,7 +716,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class EmitOneEdgeWithNeighborPerNode<K, EV> implements FlatMapFunction<
-		Edge<K, EV>, Tuple3<K, K, Edge<K, EV>>> {
+			Edge<K, EV>, Tuple3<K, K, Edge<K, EV>>> {
 
 		public void flatMap(Edge<K, EV> edge, Collector<Tuple3<K, K, Edge<K, EV>>> out) {
 			out.collect(new Tuple3<K, K, Edge<K, EV>>(edge.getSource(), edge.getTarget(), edge));
@@ -1089,7 +725,7 @@ public class Graph<K, VV, EV> {
 	}
 
 	private static final class ApplyCoGroupFunction<K, VV, EV, T> implements CoGroupFunction<
-		Vertex<K, VV>, Edge<K, EV>, T>, ResultTypeQueryable<T> {
+			Vertex<K, VV>, Edge<K, EV>, T>, ResultTypeQueryable<T> {
 
 		private EdgesFunctionWithVertexValue<K, VV, EV, T> function;
 
@@ -1098,7 +734,7 @@ public class Graph<K, VV, EV> {
 		}
 
 		public void coGroup(Iterable<Vertex<K, VV>> vertex,
-				Iterable<Edge<K, EV>> edges, Collector<T> out) throws Exception {
+							Iterable<Edge<K, EV>> edges, Collector<T> out) throws Exception {
 
 			Iterator<Vertex<K, VV>> vertexIterator = vertex.iterator();
 
@@ -1126,7 +762,7 @@ public class Graph<K, VV, EV> {
 		}
 
 		public void coGroup(Iterable<Vertex<K, VV>> vertex,	final Iterable<Tuple2<K, Edge<K, EV>>> keysWithEdges,
-				Collector<T> out) throws Exception {
+							Collector<T> out) throws Exception {
 
 			final Iterator<Edge<K, EV>> edgesIterator = new Iterator<Edge<K, EV>>() {
 
@@ -1170,7 +806,7 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	@ForwardedFields("f0->f1; f1->f0; f2")
+	@FunctionAnnotation.ForwardedFields("f0->f1; f1->f0; f2")
 	private static final class ReverseEdgesMap<K, EV>
 			implements MapFunction<Edge<K, EV>, Edge<K, EV>> {
 
@@ -1191,7 +827,7 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Reverse the direction of the edges in the graph
-	 * 
+	 *
 	 * @return a new graph with all edges reversed
 	 * @throws UnsupportedOperationException
 	 */
@@ -1236,7 +872,7 @@ public class Graph<K, VV, EV> {
 		return edges.map(new ExtractEdgeIDsMapper<K, EV>());
 	}
 
-	@ForwardedFields("f0; f1")
+	@FunctionAnnotation.ForwardedFields("f0; f1")
 	private static final class ExtractEdgeIDsMapper<K, EV>
 			implements MapFunction<Edge<K, EV>, Tuple2<K, K>> {
 		@Override
@@ -1248,7 +884,7 @@ public class Graph<K, VV, EV> {
 	/**
 	 * Adds the input vertex to the graph. If the vertex already
 	 * exists in the graph, it will not be added again.
-	 * 
+	 *
 	 * @param vertex the vertex to be added
 	 * @return the new graph containing the existing vertices as well as the one just added
 	 */
@@ -1276,7 +912,7 @@ public class Graph<K, VV, EV> {
 	/**
 	 * Adds the given edge to the graph. If the source and target vertices do
 	 * not exist in the graph, they will also be added.
-	 * 
+	 *
 	 * @param source the source vertex of the edge
 	 * @param target the target vertex of the edge
 	 * @param edgeValue the edge value
@@ -1311,7 +947,7 @@ public class Graph<K, VV, EV> {
 		return Graph.fromDataSet(this.vertices, this.edges.union(validNewEdges), this.context);
 	}
 
-	@ForwardedFieldsSecond("f0; f1; f2")
+	@FunctionAnnotation.ForwardedFieldsSecond("f0; f1; f2")
 	private static final class JoinVerticesWithEdgesOnSrc<K, VV, EV> implements
 			JoinFunction<Vertex<K, VV>, Edge<K, EV>, Edge<K, EV>> {
 
@@ -1321,7 +957,7 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	@ForwardedFieldsFirst("f0; f1; f2")
+	@FunctionAnnotation.ForwardedFieldsFirst("f0; f1; f2")
 	private static final class JoinWithVerticesOnTrg<K, VV, EV> implements
 			JoinFunction<Edge<K, EV>, Vertex<K, VV>, Edge<K, EV>> {
 
@@ -1333,7 +969,7 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Removes the given vertex and its edges from the graph.
-	 * 
+	 *
 	 * @param vertex the vertex to remove
 	 * @return the new graph containing the existing vertices and edges without
 	 *         the removed vertex and its edges
@@ -1373,7 +1009,7 @@ public class Graph<K, VV, EV> {
 		DataSet < Edge < K, EV >> newEdges = newVertices.join(getEdges()).where(0).equalTo(0)
 				// if the edge source was removed, the edge will also be removed
 				.with(new ProjectEdgeToBeRemoved<K, VV, EV>())
-				// if the edge target was removed, the edge will also be removed
+						// if the edge target was removed, the edge will also be removed
 				.join(newVertices).where(1).equalTo(0)
 				.with(new ProjectEdge<K, VV, EV>());
 
@@ -1401,7 +1037,7 @@ public class Graph<K, VV, EV> {
 
 
 
-	@ForwardedFieldsSecond("f0; f1; f2")
+	@FunctionAnnotation.ForwardedFieldsSecond("f0; f1; f2")
 	private static final class ProjectEdgeToBeRemoved<K,VV,EV> implements JoinFunction<Vertex<K, VV>, Edge<K, EV>, Edge<K, EV>> {
 		@Override
 		public Edge<K, EV> join(Vertex<K, VV> vertex, Edge<K, EV> edge) throws Exception {
@@ -1409,9 +1045,9 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	 /**
+	/**
 	 * Removes all edges that match the given edge from the graph.
-	 * 
+	 *
 	 * @param edge the edge to remove
 	 * @return the new graph containing the existing vertices and edges without
 	 *         the removed edges
@@ -1472,7 +1108,7 @@ public class Graph<K, VV, EV> {
 	/**
 	 * Performs union on the vertices and edges sets of the input graphs
 	 * removing duplicate vertices but maintaining duplicate edges.
-	 * 
+	 *
 	 * @param graph the graph to perform union with
 	 * @return a new graph
 	 */
@@ -1501,7 +1137,7 @@ public class Graph<K, VV, EV> {
 	 * @param vertexUpdateFunction the vertex update function
 	 * @param messagingFunction the messaging function
 	 * @param maximumNumberOfIterations maximum number of iterations to perform
-	 * 
+	 *
 	 * @return the updated Graph after the vertex-centric iteration has converged or
 	 * after maximumNumberOfIterations.
 	 */
@@ -1516,12 +1152,12 @@ public class Graph<K, VV, EV> {
 
 	/**
 	 * Runs a Vertex-Centric iteration on the graph with configuration options.
-	 * 
+	 *
 	 * @param vertexUpdateFunction the vertex update function
 	 * @param messagingFunction the messaging function
 	 * @param maximumNumberOfIterations maximum number of iterations to perform
 	 * @param parameters the iteration configuration parameters
-	 * 
+	 *
 	 * @return the updated Graph after the vertex-centric iteration has converged or
 	 * after maximumNumberOfIterations.
 	 */
@@ -1603,46 +1239,46 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the neighbors (both edges and vertices)
 	 * of each vertex. The neighborsFunction applied on the neighbors only has access to both the vertex id
 	 * and the vertex value of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the neighborsFunction can iterate over all neighbors of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param neighborsFunction the group reduce function to apply to the neighboring edges and vertices
 	 * of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnNeighbors(NeighborsFunctionWithVertexValue<K, VV, EV, T> neighborsFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+												 EdgeDirection direction) throws IllegalArgumentException {
 		switch (direction) {
-		case IN:
-			// create <edge-sourceVertex> pairs
-			DataSet<Tuple2<Edge<K, EV>, Vertex<K, VV>>> edgesWithSources = edges
-					.join(this.vertices).where(0).equalTo(0);
-			return vertices.coGroup(edgesWithSources)
-					.where(0).equalTo("f0.f1")
-					.with(new ApplyNeighborCoGroupFunction<K, VV, EV, T>(neighborsFunction));
-		case OUT:
-			// create <edge-targetVertex> pairs
-			DataSet<Tuple2<Edge<K, EV>, Vertex<K, VV>>> edgesWithTargets = edges
-					.join(this.vertices).where(1).equalTo(0);
-			return vertices.coGroup(edgesWithTargets)
-					.where(0).equalTo("f0.f0")
-					.with(new ApplyNeighborCoGroupFunction<K, VV, EV, T>(neighborsFunction));
-		case ALL:
-			// create <edge-sourceOrTargetVertex> pairs
-			DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithNeighbors = edges
-					.flatMap(new EmitOneEdgeWithNeighborPerNode<K, EV>())
-					.join(this.vertices).where(1).equalTo(0)
-					.with(new ProjectEdgeWithNeighbor<K, VV, EV>());
+			case IN:
+				// create <edge-sourceVertex> pairs
+				DataSet<Tuple2<Edge<K, EV>, Vertex<K, VV>>> edgesWithSources = edges
+						.join(this.vertices).where(0).equalTo(0);
+				return vertices.coGroup(edgesWithSources)
+						.where(0).equalTo("f0.f1")
+						.with(new ApplyNeighborCoGroupFunction<K, VV, EV, T>(neighborsFunction));
+			case OUT:
+				// create <edge-targetVertex> pairs
+				DataSet<Tuple2<Edge<K, EV>, Vertex<K, VV>>> edgesWithTargets = edges
+						.join(this.vertices).where(1).equalTo(0);
+				return vertices.coGroup(edgesWithTargets)
+						.where(0).equalTo("f0.f0")
+						.with(new ApplyNeighborCoGroupFunction<K, VV, EV, T>(neighborsFunction));
+			case ALL:
+				// create <edge-sourceOrTargetVertex> pairs
+				DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithNeighbors = edges
+						.flatMap(new EmitOneEdgeWithNeighborPerNode<K, EV>())
+						.join(this.vertices).where(1).equalTo(0)
+						.with(new ProjectEdgeWithNeighbor<K, VV, EV>());
 
-			return vertices.coGroup(edgesWithNeighbors)
-					.where(0).equalTo(0)
-					.with(new ApplyCoGroupFunctionOnAllNeighbors<K, VV, EV, T>(neighborsFunction));
-		default:
-			throw new IllegalArgumentException("Illegal edge direction");
+				return vertices.coGroup(edgesWithNeighbors)
+						.where(0).equalTo(0)
+						.with(new ApplyCoGroupFunctionOnAllNeighbors<K, VV, EV, T>(neighborsFunction));
+			default:
+				throw new IllegalArgumentException("Illegal edge direction");
 		}
 	}
 
@@ -1650,10 +1286,10 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the neighbors (both edges and vertices)
 	 * of each vertex. The neighborsFunction applied on the neighbors only has access to both the vertex id
 	 * and the vertex value of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the neighborsFunction can iterate over all neighbors of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param neighborsFunction the group reduce function to apply to the neighboring edges and vertices
 	 * of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
@@ -1661,9 +1297,9 @@ public class Graph<K, VV, EV> {
 	 * @param typeInfo the explicit return type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnNeighbors(NeighborsFunctionWithVertexValue<K, VV, EV, T> neighborsFunction,
-			EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
+												 EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
 		switch (direction) {
 			case IN:
 				// create <edge-sourceVertex> pairs
@@ -1698,47 +1334,47 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the neighbors (both edges and vertices)
 	 * of each vertex. The neighborsFunction applied on the neighbors only has access to the vertex id
 	 * (not the vertex value) of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the neighborsFunction can iterate over all neighbors of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param neighborsFunction the group reduce function to apply to the neighboring edges and vertices
 	 * of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
 	 * @param <T> the output type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnNeighbors(NeighborsFunction<K, VV, EV, T> neighborsFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+												 EdgeDirection direction) throws IllegalArgumentException {
 		switch (direction) {
-		case IN:
-			// create <edge-sourceVertex> pairs
-			DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithSources = edges
-					.join(this.vertices).where(0).equalTo(0)
-					.with(new ProjectVertexIdJoin<K, VV, EV>(1))
-					.withForwardedFieldsFirst("f1->f0");
-			return edgesWithSources.groupBy(0).reduceGroup(
-					new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
-		case OUT:
-			// create <edge-targetVertex> pairs
-			DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithTargets = edges
-					.join(this.vertices).where(1).equalTo(0)
-					.with(new ProjectVertexIdJoin<K, VV, EV>(0))
-					.withForwardedFieldsFirst("f0");
-			return edgesWithTargets.groupBy(0).reduceGroup(
-					new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
-		case ALL:
-			// create <edge-sourceOrTargetVertex> pairs
-			DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithNeighbors = edges
-					.flatMap(new EmitOneEdgeWithNeighborPerNode<K, EV>())
-					.join(this.vertices).where(1).equalTo(0)
-					.with(new ProjectEdgeWithNeighbor<K, VV, EV>());
+			case IN:
+				// create <edge-sourceVertex> pairs
+				DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithSources = edges
+						.join(this.vertices).where(0).equalTo(0)
+						.with(new ProjectVertexIdJoin<K, VV, EV>(1))
+						.withForwardedFieldsFirst("f1->f0");
+				return edgesWithSources.groupBy(0).reduceGroup(
+						new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
+			case OUT:
+				// create <edge-targetVertex> pairs
+				DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithTargets = edges
+						.join(this.vertices).where(1).equalTo(0)
+						.with(new ProjectVertexIdJoin<K, VV, EV>(0))
+						.withForwardedFieldsFirst("f0");
+				return edgesWithTargets.groupBy(0).reduceGroup(
+						new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
+			case ALL:
+				// create <edge-sourceOrTargetVertex> pairs
+				DataSet<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> edgesWithNeighbors = edges
+						.flatMap(new EmitOneEdgeWithNeighborPerNode<K, EV>())
+						.join(this.vertices).where(1).equalTo(0)
+						.with(new ProjectEdgeWithNeighbor<K, VV, EV>());
 
-			return edgesWithNeighbors.groupBy(0).reduceGroup(
-					new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
-		default:
-			throw new IllegalArgumentException("Illegal edge direction");
+				return edgesWithNeighbors.groupBy(0).reduceGroup(
+						new ApplyNeighborGroupReduceFunction<K, VV, EV, T>(neighborsFunction));
+			default:
+				throw new IllegalArgumentException("Illegal edge direction");
 		}
 	}
 
@@ -1746,10 +1382,10 @@ public class Graph<K, VV, EV> {
 	 * Groups by vertex and computes a GroupReduce transformation over the neighbors (both edges and vertices)
 	 * of each vertex. The neighborsFunction applied on the neighbors only has access to the vertex id
 	 * (not the vertex value) of the grouping vertex.
-	 * 
+	 *
 	 * For each vertex, the neighborsFunction can iterate over all neighbors of this vertex
 	 * with the specified direction, and emit any number of output elements, including none.
-	 * 
+	 *
 	 * @param neighborsFunction the group reduce function to apply to the neighboring edges and vertices
 	 * of each vertex.
 	 * @param direction the edge direction (in-, out-, all-).
@@ -1757,9 +1393,9 @@ public class Graph<K, VV, EV> {
 	 * @param typeInfo the explicit return type
 	 * @return a DataSet containing elements of type T
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public <T> DataSet<T> groupReduceOnNeighbors(NeighborsFunction<K, VV, EV, T> neighborsFunction,
-			EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
+												 EdgeDirection direction, TypeInformation<T> typeInfo) throws IllegalArgumentException {
 		switch (direction) {
 			case IN:
 				// create <edge-sourceVertex> pairs
@@ -1810,7 +1446,7 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	@ForwardedFieldsSecond("f1")
+	@FunctionAnnotation.ForwardedFieldsSecond("f1")
 	private static final class ProjectVertexWithNeighborValueJoin<K, VV, EV>
 			implements FlatJoinFunction<Edge<K, EV>, Vertex<K, VV>, Tuple2<K, VV>> {
 
@@ -1821,14 +1457,14 @@ public class Graph<K, VV, EV> {
 		}
 
 		@SuppressWarnings("unchecked")
-		public void join(Edge<K, EV> edge, Vertex<K, VV> otherVertex, 
-				Collector<Tuple2<K, VV>> out) {
+		public void join(Edge<K, EV> edge, Vertex<K, VV> otherVertex,
+						 Collector<Tuple2<K, VV>> out) {
 			out.collect(new Tuple2<K, VV>((K) edge.getField(fieldPosition), otherVertex.getValue()));
 		}
 	}
 
 	private static final class ProjectVertexIdJoin<K, VV, EV> implements FlatJoinFunction<
-		Edge<K, EV>, Vertex<K, VV>, Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> {
+			Edge<K, EV>, Vertex<K, VV>, Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> {
 
 		private int fieldPosition;
 
@@ -1838,36 +1474,36 @@ public class Graph<K, VV, EV> {
 
 		@SuppressWarnings("unchecked")
 		public void join(Edge<K, EV> edge, Vertex<K, VV> otherVertex,
-						Collector<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> out) {
+						 Collector<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> out) {
 			out.collect(new Tuple3<K, Edge<K, EV>, Vertex<K, VV>>((K) edge.getField(fieldPosition), edge, otherVertex));
 		}
 	}
 
-	@ForwardedFieldsFirst("f0")
-	@ForwardedFieldsSecond("f1")
+	@FunctionAnnotation.ForwardedFieldsFirst("f0")
+	@FunctionAnnotation.ForwardedFieldsSecond("f1")
 	private static final class ProjectNeighborValue<K, VV, EV> implements FlatJoinFunction<
-		Tuple3<K, K, Edge<K, EV>>, Vertex<K, VV>, Tuple2<K, VV>> {
+			Tuple3<K, K, Edge<K, EV>>, Vertex<K, VV>, Tuple2<K, VV>> {
 
 		public void join(Tuple3<K, K, Edge<K, EV>> keysWithEdge, Vertex<K, VV> neighbor,
-				Collector<Tuple2<K, VV>> out) {
+						 Collector<Tuple2<K, VV>> out) {
 
 			out.collect(new Tuple2<K, VV>(keysWithEdge.f0, neighbor.getValue()));
 		}
 	}
 
-	@ForwardedFieldsFirst("f0; f2->f1")
-	@ForwardedFieldsSecond("*->f2")
+	@FunctionAnnotation.ForwardedFieldsFirst("f0; f2->f1")
+	@FunctionAnnotation.ForwardedFieldsSecond("*->f2")
 	private static final class ProjectEdgeWithNeighbor<K, VV, EV> implements FlatJoinFunction<
-		Tuple3<K, K, Edge<K, EV>>, Vertex<K, VV>, Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> {
+			Tuple3<K, K, Edge<K, EV>>, Vertex<K, VV>, Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> {
 
 		public void join(Tuple3<K, K, Edge<K, EV>> keysWithEdge, Vertex<K, VV> neighbor,
-						Collector<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> out) {
+						 Collector<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> out) {
 			out.collect(new Tuple3<K, Edge<K, EV>, Vertex<K, VV>>(keysWithEdge.f0, keysWithEdge.f2, neighbor));
 		}
 	}
 
 	private static final class ApplyNeighborCoGroupFunction<K, VV, EV, T> implements CoGroupFunction<
-		Vertex<K, VV>, Tuple2<Edge<K, EV>, Vertex<K, VV>>, T>, ResultTypeQueryable<T> {
+			Vertex<K, VV>, Tuple2<Edge<K, EV>, Vertex<K, VV>>, T>, ResultTypeQueryable<T> {
 
 		private NeighborsFunctionWithVertexValue<K, VV, EV, T> function;
 
@@ -1876,7 +1512,7 @@ public class Graph<K, VV, EV> {
 		}
 
 		public void coGroup(Iterable<Vertex<K, VV>> vertex, Iterable<Tuple2<Edge<K, EV>, Vertex<K, VV>>> neighbors,
-				Collector<T> out) throws Exception {
+							Collector<T> out) throws Exception {
 			function.iterateNeighbors(vertex.iterator().next(),	neighbors, out);
 		}
 
@@ -1896,8 +1532,8 @@ public class Graph<K, VV, EV> {
 		}
 
 		public void coGroup(Iterable<Vertex<K, VV>> vertex,
-				final Iterable<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> keysWithNeighbors, 
-				Collector<T> out) throws Exception {
+							final Iterable<Tuple3<K, Edge<K, EV>, Vertex<K, VV>>> keysWithNeighbors,
+							Collector<T> out) throws Exception {
 
 			final Iterator<Tuple2<Edge<K, EV>, Vertex<K, VV>>> neighborsIterator = new Iterator<Tuple2<Edge<K, EV>, Vertex<K, VV>>>() {
 
@@ -1954,9 +1590,9 @@ public class Graph<K, VV, EV> {
 	 * The first field of the Tuple2 is the vertex ID and the second field
 	 * is the aggregate value computed by the provided {@link ReduceNeighborsFunction}.
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public DataSet<Tuple2<K, VV>> reduceOnNeighbors(ReduceNeighborsFunction<VV> reduceNeighborsFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+													EdgeDirection direction) throws IllegalArgumentException {
 		switch (direction) {
 			case IN:
 				// create <vertex-source value> pairs
@@ -1988,7 +1624,7 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	@ForwardedFields("f0")
+	@FunctionAnnotation.ForwardedFields("f0")
 	private static final class ApplyNeighborReduceFunction<K, VV> implements ReduceFunction<Tuple2<K, VV>> {
 
 		private ReduceNeighborsFunction<VV> function;
@@ -2016,9 +1652,9 @@ public class Graph<K, VV, EV> {
 	 * The first field of the Tuple2 is the vertex ID and the second field
 	 * is the aggregate value computed by the provided {@link ReduceEdgesFunction}.
 	 * @throws IllegalArgumentException
-	*/
+	 */
 	public DataSet<Tuple2<K, EV>> reduceOnEdges(ReduceEdgesFunction<EV> reduceEdgesFunction,
-			EdgeDirection direction) throws IllegalArgumentException {
+												EdgeDirection direction) throws IllegalArgumentException {
 
 		switch (direction) {
 			case IN:
@@ -2038,7 +1674,7 @@ public class Graph<K, VV, EV> {
 		}
 	}
 
-	@ForwardedFields("f0")
+	@FunctionAnnotation.ForwardedFields("f0")
 	private static final class ApplyReduceFunction<K, EV> implements ReduceFunction<Tuple2<K, EV>> {
 
 		private ReduceEdgesFunction<EV> function;
